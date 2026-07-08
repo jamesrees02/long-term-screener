@@ -20,12 +20,14 @@ import screener
 import settings_store
 
 
-def render_chart_panel(ticker):
-    st.header(f"4. Chart: {ticker}")
+def render_chart_panel(
+    ticker, interval_key="chart_interval", range_key="chart_range", show_save_button=True
+):
+    st.header(f"Chart: {ticker}")
     c1, c2, c3 = st.columns([2, 2, 1])
 
     interval_options = list(chart.INTERVALS.keys())
-    saved_interval = st.session_state.get("chart_interval")
+    saved_interval = st.session_state.get(interval_key)
     interval_index = (
         interval_options.index(saved_interval)
         if saved_interval in interval_options
@@ -36,24 +38,25 @@ def render_chart_panel(ticker):
         interval_options,
         index=interval_index,
         horizontal=True,
-        key="chart_interval",
+        key=interval_key,
     )
 
     range_options = list(chart.RANGES.keys())
-    saved_range = st.session_state.get("chart_range")
+    saved_range = st.session_state.get(range_key)
     range_index = (
         range_options.index(saved_range) if saved_range in range_options else 1
     )
     range_label = c2.selectbox(
-        "Range", range_options, index=range_index, key="chart_range"
+        "Range", range_options, index=range_index, key=range_key
     )
-    c3.write("")  # vertical spacer so the button lines up with the widgets
-    c3.write("")
-    if c3.button("💾 Save Settings", key="save_settings_button_chart"):
-        if settings_store.save_settings():
-            st.success("Saved.")
-        else:
-            st.error("Couldn't save settings.")
+    if show_save_button:
+        c3.write("")  # vertical spacer so the button lines up with the widgets
+        c3.write("")
+        if c3.button("💾 Save Settings", key="save_settings_button_chart"):
+            if settings_store.save_settings():
+                st.success("Saved.")
+            else:
+                st.error("Couldn't save settings.")
 
     candles = chart.get_candles(ticker, interval_label, range_label)
     if not candles:
@@ -391,3 +394,10 @@ with tab2:
                     if col in history_df.columns:
                         history_df[col] = history_df[col].map(fundamentals.format_dollars)
                 st.dataframe(history_df, hide_index=True, width="stretch")
+
+            render_chart_panel(
+                ticker_name,
+                interval_key="fundamentals_chart_interval",
+                range_key="fundamentals_chart_range",
+                show_save_button=False,
+            )
