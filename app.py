@@ -66,10 +66,6 @@ def render_chart_panel(ticker):
 
 
 st.set_page_config(page_title="Long-Term Stock Screener", layout="wide")
-
-with st.expander("DEBUG: cookies seen by the server (temporary)"):
-    st.write(dict(st.context.cookies))
-
 st.title("Long-Term Stock Screener")
 st.caption(
     "Screen stocks by fundamentals (Finviz data) and chart a pick with "
