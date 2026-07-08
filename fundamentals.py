@@ -21,12 +21,23 @@ BADGE_BY_SCORE = {0: "❌", 1: "✅", 2: "✅⭐"}
 NA_BADGE = "N/A"
 
 
+def format_dollars(value):
+    """Formats a raw financial-statement number as e.g. '$451.4B'."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    abs_v = abs(value)
+    if abs_v >= 1e9:
+        return f"${value / 1e9:,.1f}B"
+    if abs_v >= 1e6:
+        return f"${value / 1e6:,.1f}M"
+    return f"${value:,.0f}"
+
+
 def _series_oldest_to_newest(df, row_name):
     if df.empty or row_name not in df.index:
-        return []
+        return {}
     row = df.loc[row_name].dropna()
-    row = row.sort_index()  # columns are dates; ascending = oldest first
-    return list(row.items())  # [(Timestamp, value), ...]
+    return {ts.year: value for ts, value in row.items()}
 
 
 def _trend_score(values):
@@ -50,25 +61,36 @@ def analyze_ticker(ticker):
         balance = t.balance_sheet
         cashflow = t.cashflow
 
-        statements = {"income": income, "balance": balance}
-        result = {"ticker": ticker, "error": None}
+        by_year = {
+            "Revenue": _series_oldest_to_newest(income, "Total Revenue"),
+            "Net Income": _series_oldest_to_newest(income, "Net Income"),
+            "Total Assets": _series_oldest_to_newest(balance, "Total Assets"),
+            "Current Liabilities": _series_oldest_to_newest(balance, "Current Liabilities"),
+            "Cash": _series_oldest_to_newest(cashflow, "End Cash Position"),
+        }
+
+        all_years = sorted(set().union(*by_year.values()))
+        history = [
+            {"Year": year, **{label: by_year[label].get(year) for label in by_year}}
+            for year in all_years
+        ]
+
+        result = {"ticker": ticker, "error": None, "history": history}
+
         scores = []
-        for label, (stmt_key, row_name) in TREND_SOURCES.items():
-            series = _series_oldest_to_newest(statements[stmt_key], row_name)
-            values = [v for _, v in series]
+        for label, (_, _) in TREND_SOURCES.items():
+            years = sorted(by_year[label])
+            values = [by_year[label][y] for y in years]
             score, badge = _trend_score(values)
             result[f"{label} Trend"] = badge
-            result[f"_{label}_score"] = score
+            result[f"Latest {label}"] = values[-1] if values else None
             if score is not None:
                 scores.append(score)
-
         result["Total Score"] = sum(scores) if scores else None
 
-        net_income_series = dict(_series_oldest_to_newest(income, "Net Income"))
-        current_liab_series = dict(_series_oldest_to_newest(balance, "Current Liabilities"))
-        common_years = sorted(set(net_income_series) & set(current_liab_series))
+        common_years = sorted(set(by_year["Net Income"]) & set(by_year["Current Liabilities"]))
         coverage = [
-            (year, net_income_series[year] >= current_liab_series[year])
+            (year, by_year["Net Income"][year] >= by_year["Current Liabilities"][year])
             for year in common_years
         ]
         result["Liabilities Coverage"] = (
@@ -79,9 +101,12 @@ def analyze_ticker(ticker):
         result["_all_liabilities_covered"] = (
             all(covered for _, covered in coverage) if coverage else None
         )
+        result["Latest Current Liabilities"] = (
+            by_year["Current Liabilities"][common_years[-1]] if common_years else None
+        )
 
-        cash_series = _series_oldest_to_newest(cashflow, "End Cash Position")
-        cash_values = [v for _, v in cash_series]
+        cash_years = sorted(by_year["Cash"])
+        cash_values = [by_year["Cash"][y] for y in cash_years]
         result["Cash Trend"] = cash_values if cash_values else None
         result["_cash_declining"] = (
             cash_values[-1] < cash_values[-2] if len(cash_values) >= 2 else None
@@ -97,7 +122,9 @@ def run_batch(tickers, progress_callback=None):
     """tickers: list of ticker strings. progress_callback(done, total), if
     given, is called after each ticker completes. Returns a DataFrame, one
     row per ticker (rows with fetch errors still appear, with an
-    "Error" column populated instead of trend data)."""
+    "Error" column populated instead of trend data). The "History" column
+    holds each ticker's full year-by-year breakdown (list of dicts) for
+    drill-down, and isn't meant to be displayed directly."""
     cleaned = []
     seen = set()
     for tk in tickers:
@@ -119,11 +146,16 @@ def run_batch(tickers, progress_callback=None):
                     "Net Income Trend": result["Net Income Trend"],
                     "Total Assets Trend": result["Total Assets Trend"],
                     "Total Score": result["Total Score"],
+                    "Latest Revenue": result["Latest Revenue"],
+                    "Latest Net Income": result["Latest Net Income"],
+                    "Latest Total Assets": result["Latest Total Assets"],
+                    "Latest Current Liabilities": result["Latest Current Liabilities"],
                     "Liabilities Coverage": result["Liabilities Coverage"],
                     "All Liabilities Covered": result["_all_liabilities_covered"],
                     "Cash Trend": result["Cash Trend"],
                     "Cash Declining": result["_cash_declining"],
                     "Latest Cash": result["Latest Cash"],
+                    "History": result["history"],
                     "Error": None,
                 }
             )

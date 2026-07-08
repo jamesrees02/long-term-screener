@@ -323,15 +323,27 @@ with tab2:
             return ", ".join(flags)
 
         display_fdf["Flags"] = display_fdf.apply(_flags, axis=1)
+        for col in [
+            "Latest Revenue",
+            "Latest Net Income",
+            "Latest Total Assets",
+            "Latest Current Liabilities",
+        ]:
+            if col in display_fdf.columns:
+                display_fdf[col] = display_fdf[col].map(fundamentals.format_dollars)
 
         cols_order = [
             "Ticker",
             "Flags",
             "Total Score",
             "Revenue Trend",
+            "Latest Revenue",
             "Net Income Trend",
+            "Latest Net Income",
             "Total Assets Trend",
+            "Latest Total Assets",
             "Liabilities Coverage",
+            "Latest Current Liabilities",
             "Cash Trend",
             "Latest Cash",
             "Error",
@@ -339,10 +351,13 @@ with tab2:
         cols_order = [c for c in cols_order if c in display_fdf.columns]
         display_fdf = display_fdf[cols_order]
 
-        st.dataframe(
+        event = st.dataframe(
             display_fdf,
             hide_index=True,
             width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key="fundamentals_table",
             column_config={
                 "Cash Trend": st.column_config.LineChartColumn(
                     "Cash Trend", help="Cash balance, oldest to newest"
@@ -358,5 +373,21 @@ with tab2:
             "data. Liabilities Coverage shows ✅/❌ per year (oldest → "
             "newest) for whether that year's net income covered current "
             "liabilities. Total Score sums the three trend badges (0-6) — "
-            "click the column header to sort by it."
+            "click the column header to sort by it. Click a row for the "
+            "full year-by-year breakdown."
         )
+
+        selected_rows = event.selection.rows if event and event.selection else []
+        if selected_rows:
+            selected_ticker_row = fdf.iloc[selected_rows[0]]
+            ticker_name = selected_ticker_row["Ticker"]
+            history = selected_ticker_row.get("History")
+            st.subheader(f"{ticker_name} — year by year")
+            if not history:
+                st.write("No detailed history available for this ticker.")
+            else:
+                history_df = pd.DataFrame(history)
+                for col in ["Revenue", "Net Income", "Total Assets", "Current Liabilities", "Cash"]:
+                    if col in history_df.columns:
+                        history_df[col] = history_df[col].map(fundamentals.format_dollars)
+                st.dataframe(history_df, hide_index=True, width="stretch")
