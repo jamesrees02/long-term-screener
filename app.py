@@ -2,9 +2,12 @@
 
 Screens stocks by Finviz fundamentals, then charts a selected ticker with
 Yahoo Finance daily/weekly candlesticks (TradingView's own charting library).
+Also includes a separate Fundamentals Trend Screener tab that checks
+multi-year revenue/net income/total assets trends via Yahoo Finance.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +15,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import chart
+import fundamentals
 import screener
 import settings_store
 
@@ -124,124 +128,235 @@ if "settings_seeded" not in st.session_state:
             st.session_state["chart_range"] = saved["chart_range"]
     st.session_state["settings_seeded"] = True
 
-# ---------------------------------------------------------------- Step 1 ---
-st.header("1. Choose your filters")
-chosen_filters = st.multiselect(
-    "Which filters do you want to use? Pick only the ones you care about — "
-    "you don't need to touch the rest.",
-    options=ALL_FILTER_LABELS,
-    default=["Sector", "Dividend Yield (%)", "P/E"],
-    key="chosen_filters",
-)
+tab1, tab2 = st.tabs(["Finviz Screener", "Fundamentals Trend Screener"])
 
-categorical_choices = {}
-numeric_choices = {}
-
-if chosen_filters:
-    cols = st.columns(2)
-    for i, label in enumerate(chosen_filters):
-        target = cols[i % 2]
-        if label in screener.CATEGORICAL_FILTERS:
-            options = screener.categorical_options(label)
-            categorical_choices[label] = target.selectbox(
-                label, options, key=f"filt_{label}"
-            )
-        else:
-            _, lo, hi, step, scale, suffix = screener.NUMERIC_FILTERS[label]
-            from_val, to_val = target.slider(
-                label,
-                min_value=lo,
-                max_value=hi,
-                value=(lo, hi),
-                step=step,
-                key=f"filt_{label}",
-            )
-            numeric_choices[label] = (from_val, to_val)
-else:
-    st.info("Pick at least one filter above to get started.")
-
-# ---------------------------------------------------------------- Step 2 ---
-st.header("2. Choose which columns to show")
-st.caption(
-    "The order you pick columns here is the order they'll appear in the "
-    "table below. To reorder, remove a column and add it back in the order "
-    "you want."
-)
-display_columns = st.multiselect(
-    "Columns to display",
-    options=screener.ALL_DISPLAY_COLUMNS,
-    default=screener.DEFAULT_DISPLAY_COLUMNS,
-    key="display_columns",
-)
-
-with st.sidebar:
-    st.header("Settings")
-    st.caption(
-        "Set your filters, columns, and chart preferences, then click Save "
-        "— next time you open the app, they'll be loaded automatically."
+with tab1:
+    # ------------------------------------------------------------ Step 1 ---
+    st.header("1. Choose your filters")
+    chosen_filters = st.multiselect(
+        "Which filters do you want to use? Pick only the ones you care about "
+        "— you don't need to touch the rest.",
+        options=ALL_FILTER_LABELS,
+        default=["Sector", "Dividend Yield (%)", "P/E"],
+        key="chosen_filters",
     )
-    if st.button("💾 Save Settings", key="save_settings_button"):
-        if settings_store.save_settings():
-            st.success("Saved.")
-        else:
-            st.error("Couldn't save settings.")
-    with st.expander("What's currently saved?"):
-        st.json(settings_store.load_settings() or {})
 
-run = st.button("Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button")
+    categorical_choices = {}
+    numeric_choices = {}
 
-if "results_df" not in st.session_state:
-    st.session_state.results_df = None
+    if chosen_filters:
+        cols = st.columns(2)
+        for i, label in enumerate(chosen_filters):
+            target = cols[i % 2]
+            if label in screener.CATEGORICAL_FILTERS:
+                options = screener.categorical_options(label)
+                categorical_choices[label] = target.selectbox(
+                    label, options, key=f"filt_{label}"
+                )
+            else:
+                _, lo, hi, step, scale, suffix = screener.NUMERIC_FILTERS[label]
+                from_val, to_val = target.slider(
+                    label,
+                    min_value=lo,
+                    max_value=hi,
+                    value=(lo, hi),
+                    step=step,
+                    key=f"filt_{label}",
+                )
+                numeric_choices[label] = (from_val, to_val)
+    else:
+        st.info("Pick at least one filter above to get started.")
 
-if run:
-    cols_to_fetch = display_columns or screener.DEFAULT_DISPLAY_COLUMNS
-    if "Ticker" not in cols_to_fetch:
-        cols_to_fetch = ["Ticker"] + cols_to_fetch
-    with st.spinner("Screening Finviz..."):
-        try:
-            st.session_state.results_df = screener.run_screen(
-                categorical_choices, numeric_choices, cols_to_fetch
-            )
-        except Exception as exc:
-            st.error(f"Something went wrong running the screen: {exc}")
-            st.session_state.results_df = None
+    # ------------------------------------------------------------ Step 2 ---
+    st.header("2. Choose which columns to show")
+    st.caption(
+        "The order you pick columns here is the order they'll appear in the "
+        "table below. To reorder, remove a column and add it back in the "
+        "order you want."
+    )
+    display_columns = st.multiselect(
+        "Columns to display",
+        options=screener.ALL_DISPLAY_COLUMNS,
+        default=screener.DEFAULT_DISPLAY_COLUMNS,
+        key="display_columns",
+    )
 
-# ---------------------------------------------------------------- Step 3 ---
-st.header("3. Results")
-df = st.session_state.results_df
-
-if df is None:
-    st.write("Run a screen to see results here.")
-elif df.empty:
-    st.warning("No stocks matched your filters. Try widening a range.")
-else:
-    st.write(f"**{len(df)}** matching stocks — click a row to chart it.")
-    if len(df) >= screener.RESULT_LIMIT:
+    with st.sidebar:
+        st.header("Settings")
         st.caption(
-            f"Showing the {screener.RESULT_LIMIT} largest companies matching your "
-            "filters (by market cap). Add another filter to narrow this down further."
+            "Set your filters, columns, and chart preferences, then click "
+            "Save — next time you open the app, they'll be loaded "
+            "automatically."
+        )
+        if st.button("💾 Save Settings", key="save_settings_button"):
+            if settings_store.save_settings():
+                st.success("Saved.")
+            else:
+                st.error("Couldn't save settings.")
+        with st.expander("What's currently saved?"):
+            st.json(settings_store.load_settings() or {})
+
+    run = st.button(
+        "Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button"
+    )
+
+    if "results_df" not in st.session_state:
+        st.session_state.results_df = None
+
+    if run:
+        cols_to_fetch = display_columns or screener.DEFAULT_DISPLAY_COLUMNS
+        if "Ticker" not in cols_to_fetch:
+            cols_to_fetch = ["Ticker"] + cols_to_fetch
+        with st.spinner("Screening Finviz..."):
+            try:
+                st.session_state.results_df = screener.run_screen(
+                    categorical_choices, numeric_choices, cols_to_fetch
+                )
+            except Exception as exc:
+                st.error(f"Something went wrong running the screen: {exc}")
+                st.session_state.results_df = None
+
+    # ------------------------------------------------------------ Step 3 ---
+    st.header("3. Results")
+    df = st.session_state.results_df
+
+    if df is None:
+        st.write("Run a screen to see results here.")
+    elif df.empty:
+        st.warning("No stocks matched your filters. Try widening a range.")
+    else:
+        st.write(f"**{len(df)}** matching stocks — click a row to chart it.")
+        if len(df) >= screener.RESULT_LIMIT:
+            st.caption(
+                f"Showing the {screener.RESULT_LIMIT} largest companies "
+                "matching your filters (by market cap). Add another filter "
+                "to narrow this down further."
+            )
+
+        fmt_map = screener.column_format_map()
+        display_df = df.copy()
+        for col, (scale, suffix) in fmt_map.items():
+            if col in display_df.columns and pd.api.types.is_numeric_dtype(display_df[col]):
+                display_df[col] = (display_df[col] * scale).round(2)
+                if suffix:
+                    display_df[col] = display_df[col].map(
+                        lambda v: "" if pd.isna(v) else f"{v}{suffix}"
+                    )
+
+        event = st.dataframe(
+            display_df,
+            hide_index=True,
+            width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key="results_table",
         )
 
-    fmt_map = screener.column_format_map()
-    display_df = df.copy()
-    for col, (scale, suffix) in fmt_map.items():
-        if col in display_df.columns and pd.api.types.is_numeric_dtype(display_df[col]):
-            display_df[col] = (display_df[col] * scale).round(2)
-            if suffix:
-                display_df[col] = display_df[col].map(
-                    lambda v: "" if pd.isna(v) else f"{v}{suffix}"
-                )
+        selected_rows = event.selection.rows if event and event.selection else []
+        if selected_rows:
+            ticker = str(df.iloc[selected_rows[0]]["Ticker"])
+            render_chart_panel(ticker)
 
-    event = st.dataframe(
-        display_df,
-        hide_index=True,
-        width="stretch",
-        on_select="rerun",
-        selection_mode="single-row",
-        key="results_table",
+with tab2:
+    st.header("Fundamentals Trend Screener")
+    st.caption(
+        "Checks multi-year revenue, net income, and total assets trends "
+        "(Yahoo Finance data, up to ~5 years), whether each year's net "
+        "income covered that year's current liabilities, and the cash "
+        "trend. This is a separate tool from the Finviz screener above — "
+        "paste in whichever tickers you want to check. A longer list can "
+        "take a couple of minutes, since each ticker needs its own fetch."
     )
 
-    selected_rows = event.selection.rows if event and event.selection else []
-    if selected_rows:
-        ticker = str(df.iloc[selected_rows[0]]["Ticker"])
-        render_chart_panel(ticker)
+    if "fundamentals_ticker_input" not in st.session_state:
+        st.session_state["fundamentals_ticker_input"] = ""
+
+    finviz_results = st.session_state.get("results_df")
+    if finviz_results is not None and not finviz_results.empty:
+        if st.button("Use tickers from current Finviz results", key="use_finviz_tickers"):
+            st.session_state["fundamentals_ticker_input"] = ", ".join(
+                finviz_results["Ticker"].tolist()
+            )
+
+    ticker_text = st.text_area(
+        "Tickers to analyze (comma or newline separated)",
+        key="fundamentals_ticker_input",
+        height=100,
+    )
+
+    analyze = st.button("Analyze", type="primary", key="analyze_fundamentals_button")
+
+    if "fundamentals_df" not in st.session_state:
+        st.session_state.fundamentals_df = None
+
+    if analyze:
+        tickers = [t for t in re.split(r"[,\s]+", ticker_text) if t]
+        if not tickers:
+            st.warning("Enter at least one ticker first.")
+        else:
+            progress_bar = st.progress(0.0, text="Starting...")
+
+            def _update_progress(done, total):
+                progress_bar.progress(done / total, text=f"Analyzing {done}/{total}...")
+
+            st.session_state.fundamentals_df = fundamentals.run_batch(
+                tickers, progress_callback=_update_progress
+            )
+            progress_bar.empty()
+
+    fdf = st.session_state.fundamentals_df
+    if fdf is None:
+        st.write("Enter tickers and click Analyze to see results here.")
+    elif fdf.empty:
+        st.warning("No results.")
+    else:
+        st.write(f"**{len(fdf)}** tickers analyzed.")
+
+        display_fdf = fdf.copy()
+
+        def _flags(row):
+            flags = []
+            if row.get("All Liabilities Covered") is False:
+                flags.append("⚠️ Liabilities")
+            if row.get("Cash Declining"):
+                flags.append("⚠️ Cash declining")
+            return ", ".join(flags)
+
+        display_fdf["Flags"] = display_fdf.apply(_flags, axis=1)
+
+        cols_order = [
+            "Ticker",
+            "Flags",
+            "Total Score",
+            "Revenue Trend",
+            "Net Income Trend",
+            "Total Assets Trend",
+            "Liabilities Coverage",
+            "Cash Trend",
+            "Latest Cash",
+            "Error",
+        ]
+        cols_order = [c for c in cols_order if c in display_fdf.columns]
+        display_fdf = display_fdf[cols_order]
+
+        st.dataframe(
+            display_fdf,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Cash Trend": st.column_config.LineChartColumn(
+                    "Cash Trend", help="Cash balance, oldest to newest"
+                ),
+                "Latest Cash": st.column_config.NumberColumn(
+                    "Latest Cash", format="compact"
+                ),
+            },
+        )
+        st.caption(
+            "Trend badges: ✅⭐ = grew every year (best), ✅ = grew overall "
+            "but not every year, ❌ = declined overall, N/A = not enough "
+            "data. Liabilities Coverage shows ✅/❌ per year (oldest → "
+            "newest) for whether that year's net income covered current "
+            "liabilities. Total Score sums the three trend badges (0-6) — "
+            "click the column header to sort by it."
+        )
