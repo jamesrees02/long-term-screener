@@ -187,15 +187,6 @@ with st.sidebar:
             st.error("Couldn't save settings.")
     with st.expander("What's currently saved?"):
         st.json(settings_store.load_settings() or {})
-    with st.expander("DEBUG: live session state (temporary)"):
-        st.write(
-            {
-                "streamlit_version": st.__version__,
-                "chart_interval": st.session_state.get("chart_interval"),
-                "chart_range": st.session_state.get("chart_range"),
-                "settings_seeded": st.session_state.get("settings_seeded"),
-            }
-        )
 
 run = st.button("Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button")
 
