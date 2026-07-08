@@ -19,13 +19,20 @@ import settings_store
 @st.fragment
 def render_chart_panel(ticker):
     st.header(f"4. Chart: {ticker}")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns([2, 2, 1])
     interval_label = c1.radio(
         "Interval", list(chart.INTERVALS.keys()), horizontal=True, key="chart_interval"
     )
     range_label = c2.selectbox(
         "Range", list(chart.RANGES.keys()), index=1, key="chart_range"
     )
+    c3.write("")  # vertical spacer so the button lines up with the widgets
+    c3.write("")
+    if c3.button("💾 Save Settings", key="save_settings_button_chart"):
+        if settings_store.save_settings():
+            st.success("Saved.")
+        else:
+            st.error("Couldn't save settings.")
 
     candles = chart.get_candles(ticker, interval_label, range_label)
     if not candles:
