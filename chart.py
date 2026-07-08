@@ -3,7 +3,7 @@ lightweight-charts JS library."""
 
 import yfinance as yf
 
-INTERVALS = {"Daily": "1d", "Weekly": "1wk"}
+INTERVALS = {"Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"}
 RANGES = {"6M": "6mo", "1Y": "1y", "3Y": "3y", "5Y": "5y", "Max": "max"}
 
 

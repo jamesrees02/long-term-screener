@@ -26,6 +26,7 @@ def render_chart_panel(ticker):
     range_label = c2.selectbox(
         "Range", list(chart.RANGES.keys()), index=1, key="chart_range"
     )
+    settings_store.save_settings()
 
     candles = chart.get_candles(ticker, interval_label, range_label)
     if not candles:
@@ -94,6 +95,10 @@ if "settings_seeded" not in st.session_state:
                 st.session_state[f"filt_{label}"] = tuple(value)
             else:
                 st.session_state[f"filt_{label}"] = value
+        if saved.get("chart_interval") in chart.INTERVALS:
+            st.session_state["chart_interval"] = saved["chart_interval"]
+        if saved.get("chart_range") in chart.RANGES:
+            st.session_state["chart_range"] = saved["chart_range"]
     st.session_state["settings_seeded"] = True
 
 # ---------------------------------------------------------------- Step 1 ---
@@ -146,11 +151,27 @@ display_columns = st.multiselect(
     key="display_columns",
 )
 
-settings_store.save_settings(
-    chosen_filters,
-    {**categorical_choices, **{k: list(v) for k, v in numeric_choices.items()}},
-    display_columns,
-)
+settings_store.save_settings()
+
+with st.sidebar:
+    st.header("Settings")
+    shareable_url = settings_store.current_shareable_url()
+    if shareable_url:
+        st.caption(
+            "Your filters and columns are saved to this page's link "
+            "automatically as you use them."
+        )
+        st.text_input(
+            "Bookmark this link to come back to these exact settings:",
+            value=shareable_url,
+            key="shareable_url_display",
+        )
+    else:
+        st.caption(
+            "Pick some filters and columns, and this page's link will "
+            "update automatically — bookmark it any time to save your "
+            "settings for next visit."
+        )
 
 run = st.button("Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button")
 
