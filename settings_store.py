@@ -1,41 +1,38 @@
-"""Persists the user's chosen filters/columns in the page's own URL (query
-string) using Streamlit's native st.query_params, so settings survive
-across sessions and reloads.
+"""Persists the user's chosen filters/columns/chart preferences to a local
+JSON file next to the app, saved explicitly via a "Save Settings" button
+and loaded automatically each time the app starts.
 
-A cookie was tried first, but Streamlit Community Cloud's hosting proxy
-doesn't forward any cookies (custom or Streamlit's own) through to the app
-backend, so st.context.cookies always came back empty there. A hand-rolled
-components.html + window.parent.history.replaceState was tried next, but
-had no visible effect either — most likely blocked by the same cross-frame
-boundary Streamlit Cloud's hosting introduces. st.query_params, by
-contrast, is Streamlit's own first-class mechanism: writing to it goes
-through Streamlit's normal frontend/backend protocol rather than a nested
-iframe, so it isn't subject to either failure mode."""
+Cookies and Streamlit's own st.query_params were tried first for automatic,
+invisible persistence, but Streamlit Community Cloud's hosting strips
+cookies before they reach the app backend (confirmed empty via
+st.context.cookies, even for Streamlit's own cookies), and query-param
+persistence was confusing in practice. A plain server-side file, written
+on an explicit button click, sidesteps both problems — it only resets if
+the Streamlit Cloud container itself restarts (weekly sleep or a new
+deploy), which is rare compared to every page load."""
 
-import base64
 import json
+from pathlib import Path
 
 import streamlit as st
 
-QUERY_PARAM = "s"
+SETTINGS_FILE = Path(__file__).parent / "user_settings.json"
 
 
 def load_settings():
-    raw = st.query_params.get(QUERY_PARAM)
-    if not raw:
+    if not SETTINGS_FILE.exists():
         return None
     try:
-        return json.loads(base64.b64decode(raw).decode())
-    except Exception:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
         return None
 
 
 def save_settings():
     """Reads the current filter/column/chart widget values straight out of
-    st.session_state (all keyed consistently: chosen_filters, filt_<label>,
-    display_columns, chart_interval, chart_range) and persists them. Safe to
-    call from anywhere, including the chart's own st.fragment, since it
-    doesn't need any values passed in."""
+    st.session_state and writes them to disk. Call this from a "Save
+    Settings" button, not automatically on every rerun. Returns True on
+    success."""
     chosen_filters = st.session_state.get("chosen_filters", [])
     filter_values = {}
     for label in chosen_filters:
@@ -51,18 +48,8 @@ def save_settings():
         "chart_interval": st.session_state.get("chart_interval"),
         "chart_range": st.session_state.get("chart_range"),
     }
-    encoded = base64.b64encode(json.dumps(data).encode()).decode()
-    st.query_params[QUERY_PARAM] = encoded
-
-
-def current_shareable_url():
-    """Best-effort full URL (including the current query param) for the
-    user to bookmark, shown on the Settings page as a visible fallback."""
     try:
-        base = st.context.url.split("?")[0]
-    except Exception:
-        base = None
-    raw = st.query_params.get(QUERY_PARAM)
-    if not base or not raw:
-        return None
-    return f"{base}?{QUERY_PARAM}={raw}"
+        SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+        return True
+    except OSError:
+        return False

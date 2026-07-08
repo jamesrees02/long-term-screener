@@ -26,7 +26,6 @@ def render_chart_panel(ticker):
     range_label = c2.selectbox(
         "Range", list(chart.RANGES.keys()), index=1, key="chart_range"
     )
-    settings_store.save_settings()
 
     candles = chart.get_candles(ticker, interval_label, range_label)
     if not candles:
@@ -151,27 +150,17 @@ display_columns = st.multiselect(
     key="display_columns",
 )
 
-settings_store.save_settings()
-
 with st.sidebar:
     st.header("Settings")
-    shareable_url = settings_store.current_shareable_url()
-    if shareable_url:
-        st.caption(
-            "Your filters and columns are saved to this page's link "
-            "automatically as you use them."
-        )
-        st.text_input(
-            "Bookmark this link to come back to these exact settings:",
-            value=shareable_url,
-            key="shareable_url_display",
-        )
-    else:
-        st.caption(
-            "Pick some filters and columns, and this page's link will "
-            "update automatically — bookmark it any time to save your "
-            "settings for next visit."
-        )
+    st.caption(
+        "Set your filters, columns, and chart preferences, then click Save "
+        "— next time you open the app, they'll be loaded automatically."
+    )
+    if st.button("💾 Save Settings", key="save_settings_button"):
+        if settings_store.save_settings():
+            st.success("Saved.")
+        else:
+            st.error("Couldn't save settings.")
 
 run = st.button("Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button")
 
