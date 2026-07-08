@@ -16,7 +16,6 @@ import screener
 import settings_store
 
 
-@st.fragment
 def render_chart_panel(ticker):
     st.header(f"4. Chart: {ticker}")
     c1, c2, c3 = st.columns([2, 2, 1])
@@ -168,6 +167,8 @@ with st.sidebar:
             st.success("Saved.")
         else:
             st.error("Couldn't save settings.")
+    with st.expander("What's currently saved?"):
+        st.json(settings_store.load_settings() or {})
 
 run = st.button("Run Screen", type="primary", disabled=not chosen_filters, key="run_screen_button")
 
