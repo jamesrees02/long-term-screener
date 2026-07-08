@@ -19,11 +19,29 @@ import settings_store
 def render_chart_panel(ticker):
     st.header(f"4. Chart: {ticker}")
     c1, c2, c3 = st.columns([2, 2, 1])
+
+    interval_options = list(chart.INTERVALS.keys())
+    saved_interval = st.session_state.get("chart_interval")
+    interval_index = (
+        interval_options.index(saved_interval)
+        if saved_interval in interval_options
+        else 0
+    )
     interval_label = c1.radio(
-        "Interval", list(chart.INTERVALS.keys()), horizontal=True, key="chart_interval"
+        "Interval",
+        interval_options,
+        index=interval_index,
+        horizontal=True,
+        key="chart_interval",
+    )
+
+    range_options = list(chart.RANGES.keys())
+    saved_range = st.session_state.get("chart_range")
+    range_index = (
+        range_options.index(saved_range) if saved_range in range_options else 1
     )
     range_label = c2.selectbox(
-        "Range", list(chart.RANGES.keys()), index=1, key="chart_range"
+        "Range", range_options, index=range_index, key="chart_range"
     )
     c3.write("")  # vertical spacer so the button lines up with the widgets
     c3.write("")
