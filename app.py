@@ -106,7 +106,23 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
 
     lib_js = Path(__file__).parent.joinpath("lightweight_charts.min.js").read_text()
     candles_json = json.dumps(candles)
-    levels_json = json.dumps(levels)
+    # Round floats so the iframe script stays compact/stable on Streamlit Cloud.
+    levels_for_js = []
+    for level in levels:
+        levels_for_js.append(
+            {
+                **level,
+                "price": round(float(level["price"]), 4),
+                "latest_price": round(float(level["latest_price"]), 4),
+                "dollar_delta": (
+                    None
+                    if level["dollar_delta"] is None
+                    else round(float(level["dollar_delta"]), 2)
+                ),
+                "pct": round(float(level["pct"]), 2),
+            }
+        )
+    levels_json = json.dumps(levels_for_js)
     container_id = f"growth_chart_{key_prefix}_{ticker}"
     html = f"""
     <div id="{container_id}" style="position:relative; width:100%; height:420px;"></div>
@@ -114,7 +130,7 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
     <script>
         const container = document.getElementById('{container_id}');
         const chart = LightweightCharts.createChart(container, {{
-            width: container.clientWidth,
+            width: container.clientWidth || container.parentElement.clientWidth || 800,
             height: 420,
             layout: {{ background: {{ color: 'transparent' }}, textColor: '#888' }},
             grid: {{
@@ -133,15 +149,23 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
         chart.timeScale().fitContent();
 
         const levels = {levels_json};
+        const candleData = {candles_json};
+        let dataLow = Infinity;
+        let dataHigh = -Infinity;
+        candleData.forEach(function(c) {{
+            if (c.low < dataLow) dataLow = c.low;
+            if (c.high > dataHigh) dataHigh = c.high;
+        }});
         const overlay = document.createElement('canvas');
         overlay.style.position = 'absolute';
         overlay.style.top = '0';
         overlay.style.left = '0';
+        overlay.style.zIndex = '10';
         overlay.style.pointerEvents = 'none';
         container.appendChild(overlay);
 
         function hexToRgba(hex, alpha) {{
-            const h = hex.replace('#', '');
+            const h = String(hex).replace('#', '');
             const r = parseInt(h.substring(0, 2), 16);
             const g = parseInt(h.substring(2, 4), 16);
             const b = parseInt(h.substring(4, 6), 16);
@@ -158,11 +182,11 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
         }}
 
         function drawArrow(ctx, x, yBottom, yTop, color) {{
-            const tip = 7;
-            const head = 5;
+            const tip = 8;
+            const head = 6;
             ctx.strokeStyle = color;
             ctx.fillStyle = color;
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 2;
             ctx.setLineDash([]);
             ctx.beginPath();
             ctx.moveTo(x, yBottom);
@@ -176,9 +200,31 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
             ctx.fill();
         }}
 
+        function finite(v) {{
+            return typeof v === 'number' && isFinite(v);
+        }}
+
+        function priceToYFallback(price, height) {{
+            const top = 8;
+            const bottom = Math.max(top + 10, height - 28);
+            if (!(dataHigh > dataLow)) return (top + bottom) / 2;
+            return top + (dataHigh - price) / (dataHigh - dataLow) * (bottom - top);
+        }}
+
+        function priceToY(price, height) {{
+            const y = series.priceToCoordinate(price);
+            if (finite(y)) return y;
+            // Fallback if LWC scale isn't ready yet (common in Streamlit iframes).
+            return priceToYFallback(price, height);
+        }}
+
         function drawOverlay() {{
-            const width = container.clientWidth;
-            const height = container.clientHeight;
+            const width = container.clientWidth || chart.options().width || 0;
+            const height = container.clientHeight || 420;
+            if (width < 10) return;
+
+            overlay.style.width = width + 'px';
+            overlay.style.height = height + 'px';
             overlay.width = width;
             overlay.height = height;
             const ctx = overlay.getContext('2d');
@@ -196,8 +242,13 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
                     ? arr[i + 1].anchor_time
                     : level.latest_time;
                 const xRight = timeScale.timeToCoordinate(endTime);
-                const yAnchor = series.priceToCoordinate(level.price);
-                const yLatest = series.priceToCoordinate(level.latest_price);
+                let yAnchor = priceToY(level.price, height);
+                let yLatest = priceToY(level.latest_price, height);
+                // If LWC returns a collapsed/wrong scale, map prices ourselves.
+                if (!finite(yAnchor) || !finite(yLatest) || Math.abs(yAnchor - yLatest) < 8) {{
+                    yAnchor = priceToYFallback(level.price, height);
+                    yLatest = priceToYFallback(level.latest_price, height);
+                }}
                 return {{
                     level: level,
                     xLeft: xLeft,
@@ -206,8 +257,8 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
                     yLatest: yLatest,
                 }};
             }}).filter(function(p) {{
-                return p.xLeft !== null && p.xRight !== null
-                    && p.yAnchor !== null && p.yLatest !== null;
+                return finite(p.xLeft) && finite(p.xRight)
+                    && finite(p.yAnchor) && finite(p.yLatest);
             }});
             if (!points.length) return;
 
@@ -219,11 +270,12 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
                 const boxH = Math.max(yBottom - yTop, 2);
                 const boxW = Math.max(x1 - x0, 2);
 
-                ctx.fillStyle = hexToRgba(p.level.color, 0.14);
+                // Stronger fill so bands stay visible on Streamlit's light theme.
+                ctx.fillStyle = hexToRgba(p.level.color, 0.22);
                 ctx.fillRect(x0, yTop, boxW, boxH);
 
-                ctx.strokeStyle = hexToRgba(p.level.color, 0.55);
-                ctx.lineWidth = 1;
+                ctx.strokeStyle = hexToRgba(p.level.color, 0.85);
+                ctx.lineWidth = 1.5;
                 ctx.setLineDash([]);
                 ctx.strokeRect(x0 + 0.5, yTop + 0.5, boxW - 1, boxH - 1);
 
@@ -251,23 +303,42 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
                 const label = p.level.years + 'yr  '
                     + formatDelta(p.level.dollar_delta)
                     + '  (' + pctText + ')';
-                ctx.font = 'bold 11px sans-serif';
+                ctx.font = 'bold 12px sans-serif';
                 const textWidth = ctx.measureText(label).width;
-                const labelX = midX - textWidth / 2;
-                const labelY = Math.max(14, Math.min(p.yAnchor, p.yLatest) - 10);
+                const labelX = Math.max(4, Math.min(midX - textWidth / 2, width - textWidth - 8));
+                const labelY = Math.max(16, Math.min(p.yAnchor, p.yLatest) - 12);
 
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-                ctx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 15);
-                ctx.fillStyle = '#fff';
-                ctx.fillText(label, labelX, labelY);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+                ctx.strokeStyle = p.level.color;
+                ctx.lineWidth = 1;
+                ctx.setLineDash([]);
+                ctx.fillRect(labelX - 5, labelY - 12, textWidth + 10, 18);
+                ctx.strokeRect(labelX - 5.5, labelY - 12.5, textWidth + 11, 19);
+                ctx.fillStyle = '#111';
+                ctx.fillText(label, labelX, labelY + 1);
             }});
         }}
 
-        drawOverlay();
-        chart.timeScale().subscribeVisibleTimeRangeChange(drawOverlay);
-        new ResizeObserver(entries => {{
-            chart.applyOptions({{ width: entries[0].contentRect.width }});
+        function scheduleDraw() {{
             drawOverlay();
+            requestAnimationFrame(function() {{
+                drawOverlay();
+                requestAnimationFrame(drawOverlay);
+            }});
+            [50, 150, 400, 1000].forEach(function(ms) {{
+                setTimeout(drawOverlay, ms);
+            }});
+        }}
+
+        scheduleDraw();
+        chart.timeScale().subscribeVisibleTimeRangeChange(drawOverlay);
+        if (chart.timeScale().subscribeVisibleLogicalRangeChange) {{
+            chart.timeScale().subscribeVisibleLogicalRangeChange(drawOverlay);
+        }}
+        new ResizeObserver(entries => {{
+            const w = entries[0].contentRect.width;
+            if (w > 0) chart.applyOptions({{ width: w }});
+            scheduleDraw();
         }}).observe(container);
     </script>
     """
