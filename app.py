@@ -16,6 +16,7 @@ import streamlit.components.v1 as components
 
 import chart
 import fundamentals
+import portfolio
 import screener
 import settings_store
 
@@ -96,6 +97,283 @@ def render_chart_panel(
     components.html(html, height=440)
 
 
+def render_growth_chart_panel(ticker, key_prefix, returns):
+    st.subheader(f"{ticker} — 15-Year Growth (Monthly)")
+    candles, markers, levels = portfolio.get_growth_chart_data(ticker, returns)
+    if not candles:
+        st.warning(f"No price history available for {ticker}.")
+        return
+
+    lib_js = Path(__file__).parent.joinpath("lightweight_charts.min.js").read_text()
+    candles_json = json.dumps(candles)
+    markers_json = json.dumps(markers)
+    levels_json = json.dumps(levels)
+    container_id = f"growth_chart_{key_prefix}_{ticker}"
+    html = f"""
+    <div id="{container_id}" style="position:relative; width:100%; height:420px;"></div>
+    <script>{lib_js}</script>
+    <script>
+        const container = document.getElementById('{container_id}');
+        const chart = LightweightCharts.createChart(container, {{
+            width: container.clientWidth,
+            height: 420,
+            layout: {{ background: {{ color: 'transparent' }}, textColor: '#888' }},
+            grid: {{
+                vertLines: {{ color: 'rgba(128,128,128,0.15)' }},
+                horzLines: {{ color: 'rgba(128,128,128,0.15)' }}
+            }},
+            timeScale: {{ borderColor: 'rgba(128,128,128,0.3)' }},
+            rightPriceScale: {{ borderColor: 'rgba(128,128,128,0.3)' }}
+        }});
+        const series = chart.addCandlestickSeries({{
+            upColor: '#26a69a', downColor: '#ef5350',
+            borderVisible: false,
+            wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        }});
+        series.setData({candles_json});
+        series.setMarkers({markers_json});
+        chart.timeScale().fitContent();
+
+        const levels = {levels_json};
+        const overlay = document.createElement('canvas');
+        overlay.style.position = 'absolute';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.pointerEvents = 'none';
+        container.appendChild(overlay);
+
+        function drawOverlay() {{
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            overlay.width = width;
+            overlay.height = height;
+            const ctx = overlay.getContext('2d');
+            ctx.clearRect(0, 0, width, height);
+            if (!levels.length) return;
+
+            const timeScale = chart.timeScale();
+            const points = levels.map(function(level) {{
+                return {{
+                    level: level,
+                    x: timeScale.timeToCoordinate(level.anchor_time),
+                    y: series.priceToCoordinate(level.price),
+                }};
+            }}).filter(function(p) {{ return p.x !== null && p.y !== null; }});
+            if (!points.length) return;
+
+            const leftMost = Math.min.apply(null, points.map(function(p) {{ return p.x; }}));
+            ctx.fillStyle = 'rgba(33, 150, 243, 0.07)';
+            ctx.fillRect(leftMost, 0, width - leftMost, height);
+
+            points.forEach(function(p) {{
+                ctx.strokeStyle = p.level.color;
+                ctx.setLineDash([4, 3]);
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(p.x, 0);
+                ctx.lineTo(p.x, height);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(p.x, p.y);
+                ctx.lineTo(width, p.y);
+                ctx.stroke();
+
+                ctx.setLineDash([]);
+                const pct = p.level.pct;
+                const label = p.level.years + 'yr: ' + (pct >= 0 ? '+' : '') + pct.toFixed(0) + '%';
+                ctx.font = '11px sans-serif';
+                const textWidth = ctx.measureText(label).width;
+                const labelY = Math.max(12, p.y - 6);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+                ctx.fillRect(p.x + 2, labelY - 11, textWidth + 6, 14);
+                ctx.fillStyle = p.level.color;
+                ctx.fillText(label, p.x + 5, labelY);
+            }});
+        }}
+
+        drawOverlay();
+        chart.timeScale().subscribeVisibleTimeRangeChange(drawOverlay);
+        new ResizeObserver(entries => {{
+            chart.applyOptions({{ width: entries[0].contentRect.width }});
+            drawOverlay();
+        }}).observe(container);
+    </script>
+    """
+    components.html(html, height=440)
+    st.caption(
+        "Vertical lines mark 5/10/15 years ago; horizontal lines run from "
+        "that price level forward to today, labeled with the trailing "
+        "return -- the same figure shown in the table above."
+    )
+
+
+def render_etf_holdings_panel(ticker):
+    st.subheader(f"Top 10 Holdings: {ticker}")
+    holdings_df = portfolio.get_etf_holdings(ticker)
+    if holdings_df.empty:
+        st.info(f"No holdings data available for {ticker}.")
+        return
+    st.dataframe(holdings_df, hide_index=True, width="stretch")
+    st.caption(
+        "Top 10 only -- Yahoo Finance's free data doesn't expose a fund's "
+        "full holdings list."
+    )
+
+
+def _style_stock_table(display_df):
+    styler = display_df.style
+    if "P/E" in display_df.columns:
+        styler = styler.map(portfolio.pe_style, subset=["P/E"])
+    if "EPS" in display_df.columns:
+        styler = styler.map(portfolio.eps_style, subset=["EPS"])
+    if "Employees" in display_df.columns:
+        styler = styler.map(portfolio.employees_style, subset=["Employees"])
+    if "Growth Flag" in display_df.columns:
+        styler = styler.map(portfolio.growth_flag_style, subset=["Growth Flag"])
+
+    format_map = {}
+    if "P/E" in display_df.columns:
+        format_map["P/E"] = "{:.1f}"
+    if "EPS" in display_df.columns:
+        format_map["EPS"] = "{:.2f}"
+    if "Employees" in display_df.columns:
+        format_map["Employees"] = "{:,.0f}"
+    if "Dividend Yield" in display_df.columns:
+        format_map["Dividend Yield"] = "{:.2f}%"
+    if "Growth Flag" in display_df.columns:
+        format_map["Growth Flag"] = lambda v: portfolio.GROWTH_FLAG_LABEL.get(v, str(v))
+    return styler.format(format_map, na_rep="N/A")
+
+
+def _run_portfolio_batch(key_prefix, fetch_fn):
+    """Shared ticker-input + Analyze-button + progress-bar wiring for a
+    Portfolio Builder section. fetch_fn(tickers, progress_callback) ->
+    DataFrame. Returns the stored results DataFrame (or None)."""
+    ticker_key = f"portfolio_{key_prefix}_tickers"
+    if ticker_key not in st.session_state:
+        st.session_state[ticker_key] = ""
+    ticker_text = st.text_area(
+        "Tickers (comma or newline separated)", key=ticker_key, height=80
+    )
+    analyze = st.button("Analyze", key=f"analyze_{key_prefix}_button")
+
+    df_key = f"portfolio_{key_prefix}_df"
+    if df_key not in st.session_state:
+        st.session_state[df_key] = None
+
+    if analyze:
+        tickers = [t for t in re.split(r"[,\s]+", ticker_text) if t]
+        if not tickers:
+            st.warning("Enter at least one ticker first.")
+        else:
+            progress_bar = st.progress(0.0, text="Starting...")
+
+            def _update_progress(done, total):
+                progress_bar.progress(done / total, text=f"Analyzing {done}/{total}...")
+
+            st.session_state[df_key] = fetch_fn(tickers, _update_progress)
+            progress_bar.empty()
+
+    return st.session_state[df_key]
+
+
+def render_stock_section(title, key_prefix, include_financials):
+    st.subheader(title)
+    df = _run_portfolio_batch(
+        key_prefix,
+        lambda tickers, cb: portfolio.run_batch(tickers, include_financials, progress_callback=cb),
+    )
+
+    if df is None:
+        st.write("Enter tickers and click Analyze to see results here.")
+        return
+    if df.empty:
+        st.warning("No results.")
+        return
+
+    error_rows = df[df["Error"].notna()]
+    ok_df = df[df["Error"].isna()].reset_index(drop=True)
+
+    if ok_df.empty:
+        st.warning("No results.")
+    else:
+        display_cols = ["Ticker", "Sector"]
+        if include_financials:
+            display_cols += ["Revenue", "Net Income", "Total Assets", "Total Liabilities"]
+        display_cols += ["P/E", "EPS", "Employees", "Dividend Yield", "Growth Flag", "Return Display"]
+
+        display_df = ok_df[display_cols].copy()
+        for col in ["Revenue", "Net Income", "Total Assets", "Total Liabilities"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].map(fundamentals.format_dollars)
+        display_df = display_df.rename(columns={"Return Display": "5/10/15 Yr Growth"})
+
+        event = st.dataframe(
+            _style_stock_table(display_df),
+            hide_index=True,
+            width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key=f"portfolio_{key_prefix}_table",
+        )
+
+        selected_rows = event.selection.rows if event and event.selection else []
+        if selected_rows:
+            selected_row = ok_df.iloc[selected_rows[0]]
+            render_growth_chart_panel(str(selected_row["Ticker"]), key_prefix, selected_row["Returns"])
+
+    if not error_rows.empty:
+        st.caption(
+            "Couldn't fetch: "
+            + ", ".join(f"{r['Ticker']} ({r['Error']})" for _, r in error_rows.iterrows())
+        )
+
+
+def render_etf_section(title, key_prefix):
+    st.subheader(title)
+    df = _run_portfolio_batch(
+        key_prefix, lambda tickers, cb: portfolio.run_etf_batch(tickers, progress_callback=cb)
+    )
+
+    if df is None:
+        st.write("Enter tickers and click Analyze to see results here.")
+        return
+    if df.empty:
+        st.warning("No results.")
+        return
+
+    error_rows = df[df["Error"].notna()]
+    ok_df = df[df["Error"].isna()].reset_index(drop=True)
+
+    if ok_df.empty:
+        st.warning("No results.")
+    else:
+        display_df = ok_df[["Ticker", "Growth Flag", "Return Display"]].copy()
+        display_df = display_df.rename(columns={"Return Display": "5/10/15 Yr Growth"})
+
+        event = st.dataframe(
+            _style_stock_table(display_df),
+            hide_index=True,
+            width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key=f"portfolio_{key_prefix}_table",
+        )
+
+        selected_rows = event.selection.rows if event and event.selection else []
+        if selected_rows:
+            selected_row = ok_df.iloc[selected_rows[0]]
+            ticker = str(selected_row["Ticker"])
+            render_growth_chart_panel(ticker, key_prefix, selected_row["Returns"])
+            render_etf_holdings_panel(ticker)
+
+    if not error_rows.empty:
+        st.caption(
+            "Couldn't fetch: "
+            + ", ".join(f"{r['Ticker']} ({r['Error']})" for _, r in error_rows.iterrows())
+        )
+
+
 st.set_page_config(page_title="Long-Term Stock Screener", layout="wide")
 st.title("Long-Term Stock Screener")
 st.caption(
@@ -129,9 +407,19 @@ if "settings_seeded" not in st.session_state:
             st.session_state["chart_interval"] = saved["chart_interval"]
         if saved.get("chart_range") in chart.RANGES:
             st.session_state["chart_range"] = saved["chart_range"]
+        for key in [
+            "portfolio_growing_tickers",
+            "portfolio_etf_tickers",
+            "portfolio_dividend_tickers",
+            "portfolio_speculative_tickers",
+        ]:
+            if saved.get(key):
+                st.session_state[key] = saved[key]
     st.session_state["settings_seeded"] = True
 
-tab1, tab2 = st.tabs(["Finviz Screener", "Fundamentals Trend Screener"])
+tab1, tab2, tab3 = st.tabs(
+    ["Finviz Screener", "Fundamentals Trend Screener", "Portfolio Builder"]
+)
 
 with tab1:
     # ------------------------------------------------------------ Step 1 ---
@@ -401,3 +689,19 @@ with tab2:
                 range_key="fundamentals_chart_range",
                 show_save_button=False,
             )
+
+with tab3:
+    st.header("Portfolio Builder")
+    st.caption(
+        "Four target-allocation buckets, each with its own ticker list "
+        "(Yahoo Finance data throughout). Click a row for its price chart, "
+        "a 15-year monthly growth chart, and (for ETFs) top holdings."
+    )
+
+    render_stock_section("Growing Stocks (~40%)", "growing", include_financials=True)
+    st.divider()
+    render_etf_section("ETFs (~30-35%)", "etf")
+    st.divider()
+    render_stock_section("High Dividend Stocks (~5-10%)", "dividend", include_financials=False)
+    st.divider()
+    render_stock_section("Speculative Stocks (~5-10%)", "speculative", include_financials=True)

@@ -47,6 +47,10 @@ def save_settings():
         "display_columns": st.session_state.get("display_columns", []),
         "chart_interval": st.session_state.get("chart_interval"),
         "chart_range": st.session_state.get("chart_range"),
+        "portfolio_growing_tickers": st.session_state.get("portfolio_growing_tickers", ""),
+        "portfolio_etf_tickers": st.session_state.get("portfolio_etf_tickers", ""),
+        "portfolio_dividend_tickers": st.session_state.get("portfolio_dividend_tickers", ""),
+        "portfolio_speculative_tickers": st.session_state.get("portfolio_speculative_tickers", ""),
     }
     try:
         SETTINGS_FILE.write_text(json.dumps(data, indent=2))
