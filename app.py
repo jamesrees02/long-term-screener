@@ -99,14 +99,13 @@ def render_chart_panel(
 
 def render_growth_chart_panel(ticker, key_prefix, returns):
     st.subheader(f"{ticker} — 15-Year Growth (Monthly)")
-    candles, markers, levels = portfolio.get_growth_chart_data(ticker, returns)
+    candles, _markers, levels = portfolio.get_growth_chart_data(ticker, returns)
     if not candles:
         st.warning(f"No price history available for {ticker}.")
         return
 
     lib_js = Path(__file__).parent.joinpath("lightweight_charts.min.js").read_text()
     candles_json = json.dumps(candles)
-    markers_json = json.dumps(markers)
     levels_json = json.dumps(levels)
     container_id = f"growth_chart_{key_prefix}_{ticker}"
     html = f"""
@@ -131,7 +130,6 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
             wickUpColor: '#26a69a', wickDownColor: '#ef5350'
         }});
         series.setData({candles_json});
-        series.setMarkers({markers_json});
         chart.timeScale().fitContent();
 
         const levels = {levels_json};
@@ -141,6 +139,42 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
         overlay.style.left = '0';
         overlay.style.pointerEvents = 'none';
         container.appendChild(overlay);
+
+        function hexToRgba(hex, alpha) {{
+            const h = hex.replace('#', '');
+            const r = parseInt(h.substring(0, 2), 16);
+            const g = parseInt(h.substring(2, 4), 16);
+            const b = parseInt(h.substring(4, 6), 16);
+            return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+        }}
+
+        function formatDelta(value) {{
+            if (value === null || value === undefined || isNaN(value)) return 'n/a';
+            const abs = Math.abs(value);
+            const body = abs >= 100
+                ? abs.toLocaleString(undefined, {{ maximumFractionDigits: 0 }})
+                : abs.toLocaleString(undefined, {{ maximumFractionDigits: 2 }});
+            return (value >= 0 ? '+' : '-') + body;
+        }}
+
+        function drawArrow(ctx, x, yBottom, yTop, color) {{
+            const tip = 7;
+            const head = 5;
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(x, yBottom);
+            ctx.lineTo(x, yTop + tip);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, yTop);
+            ctx.lineTo(x - head, yTop + tip);
+            ctx.lineTo(x + head, yTop + tip);
+            ctx.closePath();
+            ctx.fill();
+        }}
 
         function drawOverlay() {{
             const width = container.clientWidth;
@@ -152,42 +186,80 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
             if (!levels.length) return;
 
             const timeScale = chart.timeScale();
-            const points = levels.map(function(level) {{
+            // Longest → shortest so each bucket ends where the next shorter one starts
+            // (15→10, 10→5, 5→today) — non-overlapping exclusive spans.
+            const points = levels.slice().sort(function(a, b) {{
+                return b.years - a.years;
+            }}).map(function(level, i, arr) {{
+                const xLeft = timeScale.timeToCoordinate(level.anchor_time);
+                const endTime = (i + 1 < arr.length)
+                    ? arr[i + 1].anchor_time
+                    : level.latest_time;
+                const xRight = timeScale.timeToCoordinate(endTime);
+                const yAnchor = series.priceToCoordinate(level.price);
+                const yLatest = series.priceToCoordinate(level.latest_price);
                 return {{
                     level: level,
-                    x: timeScale.timeToCoordinate(level.anchor_time),
-                    y: series.priceToCoordinate(level.price),
+                    xLeft: xLeft,
+                    xRight: xRight,
+                    yAnchor: yAnchor,
+                    yLatest: yLatest,
                 }};
-            }}).filter(function(p) {{ return p.x !== null && p.y !== null; }});
+            }}).filter(function(p) {{
+                return p.xLeft !== null && p.xRight !== null
+                    && p.yAnchor !== null && p.yLatest !== null;
+            }});
             if (!points.length) return;
 
-            const leftMost = Math.min.apply(null, points.map(function(p) {{ return p.x; }}));
-            ctx.fillStyle = 'rgba(33, 150, 243, 0.07)';
-            ctx.fillRect(leftMost, 0, width - leftMost, height);
-
             points.forEach(function(p) {{
-                ctx.strokeStyle = p.level.color;
-                ctx.setLineDash([4, 3]);
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(p.x, 0);
-                ctx.lineTo(p.x, height);
-                ctx.stroke();
-                ctx.beginPath();
-                ctx.moveTo(p.x, p.y);
-                ctx.lineTo(width, p.y);
-                ctx.stroke();
+                const x0 = Math.min(p.xLeft, p.xRight);
+                const x1 = Math.max(p.xLeft, p.xRight);
+                const yTop = Math.min(p.yAnchor, p.yLatest);
+                const yBottom = Math.max(p.yAnchor, p.yLatest);
+                const boxH = Math.max(yBottom - yTop, 2);
+                const boxW = Math.max(x1 - x0, 2);
 
+                ctx.fillStyle = hexToRgba(p.level.color, 0.14);
+                ctx.fillRect(x0, yTop, boxW, boxH);
+
+                ctx.strokeStyle = hexToRgba(p.level.color, 0.55);
+                ctx.lineWidth = 1;
                 ctx.setLineDash([]);
+                ctx.strokeRect(x0 + 0.5, yTop + 0.5, boxW - 1, boxH - 1);
+
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath();
+                ctx.moveTo(x0, p.yAnchor);
+                ctx.lineTo(x1, p.yAnchor);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(x0, p.yLatest);
+                ctx.lineTo(x1, p.yLatest);
+                ctx.stroke();
+            }});
+
+            // Arrows + labels centered in each exclusive bucket.
+            points.forEach(function(p) {{
+                const midX = (p.xLeft + p.xRight) / 2;
+                const up = p.yLatest <= p.yAnchor;
+                const yFrom = up ? p.yAnchor : p.yLatest;
+                const yTo = up ? p.yLatest : p.yAnchor;
+                drawArrow(ctx, midX, yFrom, yTo, p.level.color);
+
                 const pct = p.level.pct;
-                const label = p.level.years + 'yr: ' + (pct >= 0 ? '+' : '') + pct.toFixed(0) + '%';
-                ctx.font = '11px sans-serif';
+                const pctText = (pct >= 0 ? '+' : '') + pct.toFixed(0) + '%';
+                const label = p.level.years + 'yr  '
+                    + formatDelta(p.level.dollar_delta)
+                    + '  (' + pctText + ')';
+                ctx.font = 'bold 11px sans-serif';
                 const textWidth = ctx.measureText(label).width;
-                const labelY = Math.max(12, p.y - 6);
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-                ctx.fillRect(p.x + 2, labelY - 11, textWidth + 6, 14);
-                ctx.fillStyle = p.level.color;
-                ctx.fillText(label, p.x + 5, labelY);
+                const labelX = midX - textWidth / 2;
+                const labelY = Math.max(14, Math.min(p.yAnchor, p.yLatest) - 10);
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                ctx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 15);
+                ctx.fillStyle = '#fff';
+                ctx.fillText(label, labelX, labelY);
             }});
         }}
 
@@ -201,9 +273,9 @@ def render_growth_chart_panel(ticker, key_prefix, returns):
     """
     components.html(html, height=440)
     st.caption(
-        "Vertical lines mark 5/10/15 years ago; horizontal lines run from "
-        "that price level forward to today, labeled with the trailing "
-        "return -- the same figure shown in the table above."
+        "Adjacent shaded buckets from monthly Yahoo bars: 15→10yr, 10→5yr, "
+        "and 5yr→today (60/120/180 months back). Labels show the trailing "
+        "return from that start bar to the latest month -- same as the table."
     )
 
 

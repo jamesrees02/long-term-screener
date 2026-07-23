@@ -42,43 +42,32 @@ def _row_value(df, row_names):
     return None
 
 
-def _nearest_price(closes, target_date, tolerance_days=10):
-    if closes.empty:
-        return None
-    idx = closes.index.searchsorted(target_date)
-    candidates = [i for i in (idx - 1, idx) if 0 <= i < len(closes)]
-    if not candidates:
-        return None
-    best = min(candidates, key=lambda i: abs(closes.index[i] - target_date))
-    if abs(closes.index[best] - target_date).days > tolerance_days:
-        return None
-    return float(closes.iloc[best]), closes.index[best]
-
-
 def _returns_5_10_15(closes):
-    """closes: a Close-price Series with a DatetimeIndex, oldest first.
-    Returns {years: {"pct": float|None, "anchor_date": Timestamp|None,
-    "anchor_price": float|None}}. None (not 0) when that horizon predates
-    the available history -- e.g. a recent IPO/ETF -- rather than a
-    fabricated number."""
+    """closes: monthly Close series (DatetimeIndex, oldest first).
+
+    For each horizon, walk back ``years * 12`` monthly bars from the latest
+    bar -- e.g. Jul 2026 current → Aug 2021 for 5yr (60 months inclusive).
+    Returns {years: {"pct", "anchor_date", "anchor_price"}} with None when
+    that many bars aren't available (recent IPO/ETF), not a fabricated 0."""
     if closes.empty:
         return {
             y: {"pct": None, "anchor_date": None, "anchor_price": None}
             for y in RETURN_HORIZONS_YEARS
         }
 
-    latest_date = closes.index[-1]
     latest_close = float(closes.iloc[-1])
     result = {}
     for years in RETURN_HORIZONS_YEARS:
-        target = latest_date - pd.DateOffset(years=years)
-        found = _nearest_price(closes, target)
-        if found is None:
+        months = years * 12
+        # Last `months` bars: iloc[-months] .. iloc[-1]. Start bar is Aug
+        # when latest is Jul and months=60.
+        if len(closes) < months:
             result[years] = {"pct": None, "anchor_date": None, "anchor_price": None}
-        else:
-            price, anchor_date = found
-            pct = (latest_close / price - 1) * 100 if price else None
-            result[years] = {"pct": pct, "anchor_date": anchor_date, "anchor_price": price}
+            continue
+        anchor_date = closes.index[-months]
+        price = float(closes.iloc[-months])
+        pct = (latest_close / price - 1) * 100 if price else None
+        result[years] = {"pct": pct, "anchor_date": anchor_date, "anchor_price": price}
     return result
 
 
@@ -174,7 +163,7 @@ def fetch_stock_row(ticker, include_financials):
         result["Employees"] = info.get("fullTimeEmployees")
         result["Dividend Yield"] = info.get("dividendYield")  # already a percent, e.g. 6.46 == 6.46%
 
-        history = t.history(period="16y")
+        history = t.history(period="16y", interval="1mo")
         closes = history["Close"] if not history.empty else pd.Series(dtype=float)
         returns = _returns_5_10_15(closes)
         result["Returns"] = returns
@@ -188,7 +177,7 @@ def fetch_stock_row(ticker, include_financials):
 def fetch_etf_row(ticker):
     try:
         t = yf.Ticker(ticker)
-        history = t.history(period="16y")
+        history = t.history(period="16y", interval="1mo")
         closes = history["Close"] if not history.empty else pd.Series(dtype=float)
         returns = _returns_5_10_15(closes)
         return {
@@ -237,18 +226,15 @@ HORIZON_COLORS = {5: "#2196f3", 10: "#ffa726", 15: "#00bcd4"}
 
 
 def get_growth_chart_data(ticker, returns):
-    """Monthly candles + up to 3 markers + up to 3 horizontal "level"
-    lines for the growth-chart drill-down, styled after a
-    TradingView-style annotated growth chart: a dashed horizontal line at
-    each anchor's price level running forward to today, labeled with the
-    trailing return from that point.
+    """Monthly candles + up to 3 markers + up to 3 growth-block "levels"
+    for the Portfolio Builder drill-down chart.
 
-    `returns` is the SAME dict already computed (from daily data) for the
-    main table's Growth Flag / Return column -- reused here rather than
-    recomputed against the monthly series, so the chart's numbers always
-    match the table exactly. The daily anchor date is only snapped to the
-    nearest monthly bar for where to draw it; the price/pct shown is the
-    original daily figure."""
+    Each level spans its exclusive bucket start → today and includes the
+    anchor price, latest close, dollar delta, and trailing %.
+
+    `returns` is the SAME monthly-bar dict already computed for the table's
+    Growth Flag / Return column -- reused here so chart labels always match
+    the table. Anchor dates are already monthly bar timestamps."""
     t = yf.Ticker(ticker)
     hist = t.history(period="16y", interval="1mo")
     if hist.empty:
@@ -265,7 +251,7 @@ def get_growth_chart_data(ticker, returns):
         for ts, row in hist.iterrows()
     ]
     latest_time = candles[-1]["time"]
-    monthly_index = hist.index
+    latest_price = float(hist["Close"].iloc[-1])
 
     markers = []
     levels = []
@@ -274,12 +260,11 @@ def get_growth_chart_data(ticker, returns):
         if info_r["pct"] is None or info_r["anchor_date"] is None:
             continue
         color = HORIZON_COLORS[years]
-        # Snap to the nearest monthly bar so the marker/line lands on an
-        # actual candle -- the daily anchor date itself won't usually be
-        # a bar in this monthly series.
-        idx = monthly_index.searchsorted(info_r["anchor_date"])
-        idx = min(max(idx, 0), len(monthly_index) - 1)
-        anchor_time = monthly_index[idx].strftime("%Y-%m-%d")
+        anchor_time = pd.Timestamp(info_r["anchor_date"]).strftime("%Y-%m-%d")
+        anchor_price = info_r["anchor_price"]
+        dollar_delta = (
+            None if anchor_price is None else latest_price - float(anchor_price)
+        )
         markers.append(
             {
                 "time": anchor_time,
@@ -295,7 +280,9 @@ def get_growth_chart_data(ticker, returns):
                 "color": color,
                 "anchor_time": anchor_time,
                 "latest_time": latest_time,
-                "price": info_r["anchor_price"],
+                "price": anchor_price,
+                "latest_price": latest_price,
+                "dollar_delta": dollar_delta,
                 "pct": info_r["pct"],
             }
         )
