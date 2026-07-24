@@ -1,21 +1,23 @@
-"""Portfolio Builder: yfinance-based fetchers for a personal 4-section
-target-allocation tracker (Growing Stocks, ETFs, High Dividend Stocks,
-Speculative Stocks), modeled on the user's own spreadsheet.
+"""Portfolio Builder fetchers for a personal 4-section target-allocation
+tracker (Growing Stocks, ETFs, High Dividend Stocks, Speculative Stocks).
 
-Single data source (yfinance) for every field in every section -- see
-fundamentals.py's docstring for why Finviz doesn't serve this kind of
-per-ticker multi-year/historical pull well; no reason to mix two
-providers' quirks in one table.
+Quote snapshot fields (P/E, EPS, Employees, Dividend Yield) come from
+Finviz. Multi-year financials and price history still come from yfinance
+-- Finviz's free quote page is a current snapshot only.
 """
+
+import re
 
 import pandas as pd
 import yfinance as yf
+from finvizfinance.util import web_scrap
 
 RETURN_HORIZONS_YEARS = [5, 10, 15]
 EMPLOYEE_THRESHOLD = 10_000
 PE_MAX = 100
 
 LIABILITIES_ROW_CANDIDATES = ["Total Liabilities Net Minority Interest", "Total Liab"]
+FINVIZ_QUOTE_URL = "https://finviz.com/quote.ashx?t={ticker}"
 
 COLOR_GREEN = "background-color: #c8e6c9; color: black"
 COLOR_ORANGE = "background-color: #ffe0b2; color: black"
@@ -96,17 +98,62 @@ def _growth_flag(returns):
     return "orange"
 
 
-def _pe_ratio(info, net_income):
-    """trailingPE if usable; else Market Cap / Net Income, only when
-    net_income is positive (matches the spreadsheet's own fallback
-    rule). Returns (value_or_None, is_fallback)."""
-    pe = info.get("trailingPE")
-    if pe is not None and pe > 0:
-        return pe, False
-    market_cap = info.get("marketCap")
-    if market_cap and net_income and net_income > 0:
-        return market_cap / net_income, True
-    return None, False
+def _finviz_number(value):
+    """Parse a Finviz snapshot cell to float. Returns None for blanks,
+    dashes, or non-numeric placeholders."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text in {"-", "—", "- -"}:
+        return None
+    text = text.replace(",", "").replace("%", "")
+    # Values like "5.24 (1.99%)" — caller should use the dedicated
+    # dividend helper; here take the leading number.
+    text = text.split("(")[0].strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _finviz_dividend_yield_pct(dividend_ttm):
+    """Finviz 'Dividend TTM' looks like '5.24 (1.99%)' or '-'. Return the
+    yield percent (1.99), matching the table's '{:.2f}%' formatter."""
+    if dividend_ttm is None:
+        return None
+    text = str(dividend_ttm).strip()
+    if not text or text in {"-", "—"}:
+        return None
+    match = re.search(r"\(([\d.]+)\s*%\)", text)
+    if match:
+        return float(match.group(1))
+    # Bare percent cell (rare) — treat as already in percent units only
+    # when the string itself ends with %.
+    if text.endswith("%"):
+        return _finviz_number(text)
+    return None
+
+
+def _fetch_finviz_quote_fields(ticker):
+    """Current Finviz quote snapshot for P/E, EPS (ttm), Employees, and
+    Dividend Yield. Parses all snapshot-table2 blocks — Finviz split the
+    old multi-column table into several 2-column tables, which breaks
+    finvizfinance.ticker_fundament()."""
+    soup = web_scrap(FINVIZ_QUOTE_URL.format(ticker=ticker))
+    fund = {}
+    for table in soup.find_all("table", class_="snapshot-table2"):
+        for row in table.find_all("tr"):
+            cols = [c.get_text(strip=True) for c in row.find_all("td")]
+            for i in range(0, len(cols) - 1, 2):
+                fund[cols[i]] = cols[i + 1]
+
+    employees = _finviz_number(fund.get("Employees"))
+    return {
+        "P/E": _finviz_number(fund.get("P/E")),
+        "EPS": _finviz_number(fund.get("EPS (ttm)")),
+        "Employees": int(employees) if employees is not None else None,
+        "Dividend Yield": _finviz_dividend_yield_pct(fund.get("Dividend TTM")),
+    }
 
 
 def pe_style(value):
@@ -137,31 +184,36 @@ def growth_flag_style(flag):
 def fetch_stock_row(ticker, include_financials):
     """include_financials=True adds Revenue/Net Income/Total Assets/
     Total Liabilities (Growing & Speculative sections); False skips them
-    (High Dividend section). Net Income is still fetched either way --
-    it's needed internally for the P/E fallback regardless of whether
-    it's shown as its own column."""
+    (High Dividend section). P/E, EPS, Employees, and Dividend Yield are
+    always from Finviz; growth history stays on yfinance."""
     try:
         t = yf.Ticker(ticker)
         info = t.info or {}
-        income = t.income_stmt
-        net_income = _row_value(income, ["Net Income"])
 
         result = {"Ticker": ticker, "Error": None}
         result["Sector"] = info.get("sector") or "N/A"
 
         if include_financials:
-            revenue = _row_value(income, ["Total Revenue"])
+            income = t.income_stmt
             balance = t.balance_sheet
-            result["Revenue"] = revenue
-            result["Net Income"] = net_income
+            result["Revenue"] = _row_value(income, ["Total Revenue"])
+            result["Net Income"] = _row_value(income, ["Net Income"])
             result["Total Assets"] = _row_value(balance, ["Total Assets"])
             result["Total Liabilities"] = _row_value(balance, LIABILITIES_ROW_CANDIDATES)
 
-        pe, _pe_is_fallback = _pe_ratio(info, net_income)
-        result["P/E"] = pe
-        result["EPS"] = info.get("trailingEps")
-        result["Employees"] = info.get("fullTimeEmployees")
-        result["Dividend Yield"] = info.get("dividendYield")  # already a percent, e.g. 6.46 == 6.46%
+        try:
+            fv = _fetch_finviz_quote_fields(ticker)
+        except Exception:
+            fv = {
+                "P/E": None,
+                "EPS": None,
+                "Employees": None,
+                "Dividend Yield": None,
+            }
+        result["P/E"] = fv["P/E"]
+        result["EPS"] = fv["EPS"]
+        result["Employees"] = fv["Employees"]
+        result["Dividend Yield"] = fv["Dividend Yield"]
 
         history = t.history(period="16y", interval="1mo")
         closes = history["Close"] if not history.empty else pd.Series(dtype=float)
