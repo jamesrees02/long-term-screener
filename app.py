@@ -363,6 +363,14 @@ def render_etf_holdings_panel(ticker):
     )
 
 
+def _render_growth_price_legend(returns):
+    """Show the monthly closes behind the selected row's growth figures."""
+    st.caption("Prices used for 5/10/15yr growth (Yahoo monthly closes)")
+    cols = st.columns(4)
+    for col, (label, price, when) in zip(cols, portfolio.growth_price_rows(returns)):
+        col.metric(label, price, help=when or "N/A")
+
+
 def _style_stock_table(display_df):
     styler = display_df.style
     if "P/E" in display_df.columns:
@@ -463,6 +471,7 @@ def render_stock_section(title, key_prefix, include_financials):
         selected_rows = event.selection.rows if event and event.selection else []
         if selected_rows:
             selected_row = ok_df.iloc[selected_rows[0]]
+            _render_growth_price_legend(selected_row["Returns"])
             render_growth_chart_panel(str(selected_row["Ticker"]), key_prefix, selected_row["Returns"])
 
     if not error_rows.empty:
@@ -507,6 +516,7 @@ def render_etf_section(title, key_prefix):
         if selected_rows:
             selected_row = ok_df.iloc[selected_rows[0]]
             ticker = str(selected_row["Ticker"])
+            _render_growth_price_legend(selected_row["Returns"])
             render_growth_chart_panel(ticker, key_prefix, selected_row["Returns"])
             render_etf_holdings_panel(ticker)
 

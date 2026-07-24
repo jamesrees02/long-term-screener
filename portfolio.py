@@ -49,16 +49,18 @@ def _returns_5_10_15(closes):
 
     For each horizon, walk back ``years * 12`` monthly bars from the latest
     bar -- e.g. Jul 2026 current → Aug 2021 for 5yr (60 months inclusive).
-    Returns {years: {"pct", "anchor_date", "anchor_price"}} with None when
+    Returns {years: {"pct", "anchor_date", "anchor_price"}} plus
+    latest_price / latest_date for tooltips. Horizon values are None when
     that many bars aren't available (recent IPO/ETF), not a fabricated 0."""
+    empty_horizons = {
+        y: {"pct": None, "anchor_date": None, "anchor_price": None}
+        for y in RETURN_HORIZONS_YEARS
+    }
     if closes.empty:
-        return {
-            y: {"pct": None, "anchor_date": None, "anchor_price": None}
-            for y in RETURN_HORIZONS_YEARS
-        }
+        return {**empty_horizons, "latest_price": None, "latest_date": None}
 
     latest_close = float(closes.iloc[-1])
-    result = {}
+    result = {"latest_price": latest_close, "latest_date": closes.index[-1]}
     for years in RETURN_HORIZONS_YEARS:
         months = years * 12
         # Last `months` bars: iloc[-months] .. iloc[-1]. Start bar is Aug
@@ -71,6 +73,40 @@ def _returns_5_10_15(closes):
         pct = (latest_close / price - 1) * 100 if price else None
         result[years] = {"pct": pct, "anchor_date": anchor_date, "anchor_price": price}
     return result
+
+
+def _fmt_month_year(ts):
+    if ts is None or (isinstance(ts, float) and pd.isna(ts)):
+        return None
+    ts = pd.Timestamp(ts)
+    return ts.strftime("%b %Y")
+
+
+def _fmt_price(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def growth_price_rows(returns):
+    """[(label, price_str, month_year_or_None), ...] for Current/5yr/10yr/15yr."""
+    rows = [
+        (
+            "Current",
+            _fmt_price(returns.get("latest_price")),
+            _fmt_month_year(returns.get("latest_date")),
+        )
+    ]
+    for years in RETURN_HORIZONS_YEARS:
+        info = returns[years]
+        rows.append(
+            (
+                f"{years}yr",
+                _fmt_price(info["anchor_price"]),
+                _fmt_month_year(info["anchor_date"]),
+            )
+        )
+    return rows
 
 
 def format_returns_cell(returns):
