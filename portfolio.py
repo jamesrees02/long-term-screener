@@ -195,8 +195,13 @@ def fetch_stock_row(ticker, include_financials):
 
         if include_financials:
             income = t.income_stmt
+            ttm_income = t.ttm_income_stmt
             balance = t.balance_sheet
-            result["Revenue"] = _row_value(income, ["Total Revenue"])
+            # Prefer TTM revenue (matches Finviz "Sales"); fall back to the
+            # latest annual figure when TTM isn't available.
+            result["Revenue"] = _row_value(ttm_income, ["Total Revenue"]) or _row_value(
+                income, ["Total Revenue"]
+            )
             result["Net Income"] = _row_value(income, ["Net Income"])
             result["Total Assets"] = _row_value(balance, ["Total Assets"])
             result["Total Liabilities"] = _row_value(balance, LIABILITIES_ROW_CANDIDATES)
